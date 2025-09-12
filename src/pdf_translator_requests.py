@@ -6,7 +6,7 @@ requests를 사용한 간단한 PDF 번역 모듈
 
 import os, io, re, json, time
 from typing import List, Dict
-import pdfplumber
+import fitz  # PyMuPDF
 import requests
 
 class RequestsPDFTranslator:
@@ -39,8 +39,8 @@ class RequestsPDFTranslator:
         print(f"[{t}] {msg}", flush=True)
 
     def extract_text_from_pdf(self, pdf_file) -> str:
-        """PDF 파일에서 텍스트 추출 (pdfplumber 사용)"""
-        self.log("PDF 텍스트 추출 시작 (pdfplumber)")
+        """PDF 파일에서 텍스트 추출 (PyMuPDF 사용)"""
+        self.log("PDF 텍스트 추출 시작 (PyMuPDF)")
         
         # 파일 객체를 BytesIO로 변환
         if hasattr(pdf_file, 'read'):
@@ -50,15 +50,15 @@ class RequestsPDFTranslator:
         
         try:
             text_parts = []
-            with pdfplumber.open(bio) as pdf:
-                for page_num, page in enumerate(pdf.pages, 1):
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_parts.append(f"\n[Page {page_num}]\n{page_text}\n")
-                    self.log(f"  - 페이지 {page_num} 처리 완료")
+            doc = fitz.open(stream=bio, filetype="pdf")
+            for page_num, page in enumerate(doc, 1):
+                page_text = page.get_text()
+                if page_text.strip():
+                    text_parts.append(f"\n[Page {page_num}]\n{page_text}\n")
+                self.log(f"  - 페이지 {page_num} 처리 완료")
             
             full_text = "".join(text_parts)
-            self.log(f"PDF 텍스트 추출 완료: 총 {len(pdf.pages)} 페이지")
+            self.log(f"PDF 텍스트 추출 완료: 총 {len(doc)} 페이지")
             return full_text.strip()
             
         except Exception as e:
