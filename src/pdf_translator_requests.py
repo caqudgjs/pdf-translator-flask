@@ -16,8 +16,28 @@ class RequestsPDFTranslator:
         self.api_url = "https://api.openai.com/v1/chat/completions"
         self.max_input_chars = 7000
         self.max_output_tokens = 3200
-        
-        self.SYS_RULES = """당신은 '논문 전문 번역기'입니다.
+
+    def validate_api_key(self) -> bool:
+        """OpenAI API 키 유효성 검사"""
+        self.log("OpenAI API 키 유효성 검사 시작")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        try:
+            # 모델 목록을 가져오는 간단한 API 호출로 키 유효성 검사
+            response = requests.get("https://api.openai.com/v1/models", headers=headers, timeout=10)
+            if response.status_code == 200:
+                self.log("OpenAI API 키 유효성 검사 성공")
+                return True
+            else:
+                self.log(f"OpenAI API 키 유효성 검사 실패: {response.status_code} - {response.text}")
+                return False
+        except requests.exceptions.RequestException as e:
+            self.log(f"OpenAI API 키 유효성 검사 중 네트워크 오류: {e}")
+            return False
+
+    SYS_RULES = """당신은 '논문 전문 번역기'입니다.
 반드시 문서의 모든 문장을 빠짐없이 한국어로 **완전 번역**하되,
 다음 표기 규칙을 지키세요(요약/생략 금지, 누락 금지).
 
@@ -163,6 +183,10 @@ class RequestsPDFTranslator:
     def translate_pdf(self, pdf_file):
         """PDF 번역 메인 함수"""
         try:
+            # API 키 유효성 검사
+            if not self.validate_api_key():
+                raise RuntimeError("유효하지 않은 OpenAI API 키입니다. 키를 확인해주세요.")
+
             # PDF에서 텍스트 추출
             text = self.extract_text_from_pdf(pdf_file)
             if not text.strip():
