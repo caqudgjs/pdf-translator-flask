@@ -55,7 +55,8 @@ class RequestsPDFTranslator:
             for page_num, page in enumerate(reader.pages, 1):
                 page_text = page.extract_text()
                 if page_text.strip():
-                    text_parts.append(f"\n[Page {page_num}]\n{page_text}\n")
+                    # Ensure text is UTF-8 encoded to prevent codec errors
+                    text_parts.append(f"\n[Page {page_num}]\n{page_text.encode("utf-8", "ignore").decode("utf-8")}\n")
                 self.log(f"  - 페이지 {page_num} 처리 완료")
             
             full_text = "".join(text_parts)
