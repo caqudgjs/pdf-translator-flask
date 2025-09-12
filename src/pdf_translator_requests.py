@@ -6,7 +6,7 @@ requests를 사용한 간단한 PDF 번역 모듈
 
 import os, io, re, json, time
 from typing import List, Dict
-import fitz  # PyMuPDF
+import PyMuPDF as fitz  # PyMuPDF
 import requests
 
 class RequestsPDFTranslator:
