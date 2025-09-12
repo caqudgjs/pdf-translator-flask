@@ -6,7 +6,7 @@ requests를 사용한 간단한 PDF 번역 모듈
 
 import os, io, re, json, time
 from typing import List, Dict
-import PyPDF2
+import pdfplumber
 import requests
 
 class RequestsPDFTranslator:
@@ -39,8 +39,8 @@ class RequestsPDFTranslator:
         print(f"[{t}] {msg}", flush=True)
 
     def extract_text_from_pdf(self, pdf_file) -> str:
-        """PDF 파일에서 텍스트 추출 (PyPDF2 사용)"""
-        self.log("PDF 텍스트 추출 시작")
+        """PDF 파일에서 텍스트 추출 (pdfplumber 사용)"""
+        self.log("PDF 텍스트 추출 시작 (pdfplumber)")
         
         # 파일 객체를 BytesIO로 변환
         if hasattr(pdf_file, 'read'):
@@ -49,18 +49,16 @@ class RequestsPDFTranslator:
             bio = io.BytesIO(pdf_file)
         
         try:
-            reader = PyPDF2.PdfReader(bio)
             text_parts = []
-            
-            for page_num, page in enumerate(reader.pages, 1):
-                page_text = page.extract_text()
-                if page_text.strip():
-                    # Ensure text is UTF-8 encoded to prevent codec errors
-                    text_parts.append(f"\n[Page {page_num}]\n{page_text.encode("utf-8", "ignore").decode("utf-8")}\n")
-                self.log(f"  - 페이지 {page_num} 처리 완료")
+            with pdfplumber.open(bio) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_parts.append(f"\n[Page {page_num}]\n{page_text}\n")
+                    self.log(f"  - 페이지 {page_num} 처리 완료")
             
             full_text = "".join(text_parts)
-            self.log(f"PDF 텍스트 추출 완료: 총 {len(reader.pages)} 페이지")
+            self.log(f"PDF 텍스트 추출 완료: 총 {len(pdf.pages)} 페이지")
             return full_text.strip()
             
         except Exception as e:
