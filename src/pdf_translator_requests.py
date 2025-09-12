@@ -128,7 +128,7 @@ class RequestsPDFTranslator:
             "max_tokens": self.max_output_tokens
         }
         
-        response = requests.post(self.api_url, headers=headers, json=data, timeout=120)
+        response = requests.post(self.api_url, headers=headers, json=data, timeout=300) # 타임아웃 300초로 증가
         
         self.log(f"OpenAI API 응답 상태 코드: {response.status_code}")
         self.log(f"OpenAI API 응답 텍스트: {response.text[:500]}...") # 처음 500자만 로깅
