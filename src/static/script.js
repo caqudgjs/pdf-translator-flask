@@ -62,6 +62,8 @@ pdfFileInput.addEventListener('change', (e) => {
 
 // 파일 선택 처리
 function handleFileSelect(file) {
+    selectedFile = file;
+
     if (file.type !== 'application/pdf') {
         alert('PDF 파일만 업로드 가능합니다.');
         return;
