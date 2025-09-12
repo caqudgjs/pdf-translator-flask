@@ -6,7 +6,7 @@ requests를 사용한 간단한 PDF 번역 모듈
 
 import os, io, re, json, time
 from typing import List, Dict
-import PyMuPDF as fitz  # PyMuPDF
+import PyPDF2
 import requests
 
 class RequestsPDFTranslator:
@@ -39,8 +39,8 @@ class RequestsPDFTranslator:
         print(f"[{t}] {msg}", flush=True)
 
     def extract_text_from_pdf(self, pdf_file) -> str:
-        """PDF 파일에서 텍스트 추출 (PyMuPDF 사용)"""
-        self.log("PDF 텍스트 추출 시작 (PyMuPDF)")
+        """PDF 파일에서 텍스트 추출 (PyPDF2 사용)"""
+        self.log("PDF 텍스트 추출 시작 (PyPDF2)")
         
         # 파일 객체를 BytesIO로 변환
         if hasattr(pdf_file, 'read'):
@@ -49,16 +49,21 @@ class RequestsPDFTranslator:
             bio = io.BytesIO(pdf_file)
         
         try:
+            reader = PyPDF2.PdfReader(bio)
             text_parts = []
-            doc = fitz.open(stream=bio, filetype="pdf")
-            for page_num, page in enumerate(doc, 1):
-                page_text = page.get_text()
-                if page_text.strip():
-                    text_parts.append(f"\n[Page {page_num}]\n{page_text}\n")
+            
+            for page_num, page in enumerate(reader.pages, 1):
+                # PyPDF2의 extract_text()는 기본적으로 유니코드를 반환하지만,
+                # 간혹 문제가 발생할 수 있으므로, 명시적으로 인코딩/디코딩 처리
+                page_text = page.extract_text()
+                if page_text:
+                    # latin-1 코덱 오류 방지를 위해 utf-8로 인코딩 후 다시 디코딩 (오류 무시)
+                    cleaned_text = page_text.encode('utf-8', 'ignore').decode('utf-8')
+                    text_parts.append(f"\n[Page {page_num}]\n{cleaned_text}\n")
                 self.log(f"  - 페이지 {page_num} 처리 완료")
             
             full_text = "".join(text_parts)
-            self.log(f"PDF 텍스트 추출 완료: 총 {len(doc)} 페이지")
+            self.log(f"PDF 텍스트 추출 완료: 총 {len(reader.pages)} 페이지")
             return full_text.strip()
             
         except Exception as e:
