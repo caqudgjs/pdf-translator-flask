@@ -105,8 +105,8 @@ class OptimizedPDFTranslator {
 
         const formData = new FormData(this.translateForm);
         
-        if (!this.fileInput.files[0]) {
-            this.showError('PDF 파일을 선택해주세요.');
+        if (!formData.get("file")) {
+            this.showError("PDF 파일을 선택해주세요.");
             return;
         }
 
