@@ -8,7 +8,6 @@ from flask_cors import CORS
 from src.models.user import db
 from src.routes.user import user_bp
 from src.routes.pdf_translate import pdf_translate_bp
-from src.routes.pdf_translate_async import pdf_translate_async_bp
 from src.routes.pdf_translate_optimized import pdf_translate_optimized_bp
 
 app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), 'static'))
@@ -20,7 +19,6 @@ CORS(app)
 
 app.register_blueprint(user_bp, url_prefix='/api')
 app.register_blueprint(pdf_translate_bp, url_prefix='/api/pdf')
-app.register_blueprint(pdf_translate_async_bp, url_prefix='/api/pdf/async')
 app.register_blueprint(pdf_translate_optimized_bp, url_prefix='/api/pdf/optimized')
 
 # uncomment if you need to use database
