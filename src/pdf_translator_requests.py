@@ -50,16 +50,17 @@ class RequestsPDFTranslator:
         
         try:
             reader = PyPDF2.PdfReader(bio)
-            text = ""
+            text_parts = []
             
             for page_num, page in enumerate(reader.pages, 1):
                 page_text = page.extract_text()
                 if page_text.strip():
-                    text += f"\n[Page {page_num}]\n{page_text}\n"
+                    text_parts.append(f"\n[Page {page_num}]\n{page_text}\n")
                 self.log(f"  - 페이지 {page_num} 처리 완료")
             
+            full_text = "".join(text_parts)
             self.log(f"PDF 텍스트 추출 완료: 총 {len(reader.pages)} 페이지")
-            return text.strip()
+            return full_text.strip()
             
         except Exception as e:
             raise RuntimeError(f"PDF 텍스트 추출 실패: {str(e)}")
