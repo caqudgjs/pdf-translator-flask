@@ -114,7 +114,8 @@ class RequestsPDFTranslator:
         self.log(f"OpenAI API 응답 텍스트: {response.text[:500]}...") # 처음 500자만 로깅
 
         if response.status_code != 200:
-            raise RuntimeError(f"OpenAI API 오류: {response.status_code} - {response.text}")
+            self.log(f"OpenAI API 오류 상세: {response.text}") # 전체 응답 텍스트 로깅
+            raise RuntimeError(f"OpenAI API 오류: {response.status_code} - {response.text[:200]}...") # 처음 200자만 표시
         
         try:
             result = response.json()
@@ -142,7 +143,7 @@ class RequestsPDFTranslator:
             }
         ]
         
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 result = self.call_openai_api(messages)
                 if not result:
