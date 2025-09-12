@@ -106,10 +106,16 @@ class RequestsPDFTranslator:
         
         response = requests.post(self.api_url, headers=headers, json=data, timeout=120)
         
+        self.log(f"OpenAI API 응답 상태 코드: {response.status_code}")
+        self.log(f"OpenAI API 응답 텍스트: {response.text[:500]}...") # 처음 500자만 로깅
+
         if response.status_code != 200:
             raise RuntimeError(f"OpenAI API 오류: {response.status_code} - {response.text}")
         
-        result = response.json()
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            raise RuntimeError(f"OpenAI API 응답 JSON 파싱 실패: {response.text}")
         
         if 'choices' not in result or not result['choices']:
             raise RuntimeError("OpenAI API 응답에 choices가 없습니다.")
