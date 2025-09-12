@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify, current_app
 from werkzeug.utils import secure_filename
 import os
 import tempfile
-from src.pdf_translator import PDFTranslator
+from src.pdf_translator_simple import SimplePDFTranslator
 
 pdf_translate_bp = Blueprint('pdf_translate', __name__)
 
@@ -29,19 +29,18 @@ def translate_pdf():
         # API 키와 모델명 가져오기
         api_key = request.form.get('api_key')
         model_name = request.form.get('model_name', 'gpt-4o-mini')
-        generate_ko = request.form.get('generate_ko', 'true').lower() == 'true'
         
         if not api_key:
             return jsonify({'success': False, 'message': 'OpenAI API 키가 필요합니다.'}), 400
         
         # PDF 번역기 초기화
-        translator = PDFTranslator(api_key=api_key, model_name=model_name)
+        translator = SimplePDFTranslator(api_key=api_key, model_name=model_name)
         
         # 파일 읽기
         file_content = file.read()
         
         # PDF 번역 수행
-        result = translator.translate_pdf(file_content, generate_ko=generate_ko)
+        result = translator.translate_pdf(file_content)
         
         return jsonify(result)
         
