@@ -37,21 +37,7 @@ class RequestsPDFTranslator:
             self.log(f"OpenAI API 키 유효성 검사 중 네트워크 오류: {e}")
             return False
 
-    SYS_RULES = """당신은 '논문 전문 번역기'입니다.
-반드시 문서의 모든 문장을 빠짐없이 한국어로 **완전 번역**하되,
-다음 표기 규칙을 지키세요(요약/생략 금지, 누락 금지).
-
-[핵심 규칙]
-1) 영문 기술/전문 용어는 **원문 + 괄호 안 한국어 음독**으로 표기합니다.
-   - 형식: term(한글음독).  예) application → application(어플리케이션)
-   - 약어(예: AI, API)도 같은 형식: AI(에이아이), API(에이피아이)
-
-2) 전체 문장은 자연스러운 한국어로 번역합니다.
-   - 지정된 용어만 원문을 보존하고, 나머지는 자연스럽게 번역합니다.
-
-3) 일관성:
-   - 동일한 영어 단어는 문서 전반에 걸쳐 같은 한글 음독을 사용합니다.
-"""
+    SYS_RULES = """You are an expert academic paper translator. Your task is to translate the provided text into Korean. You must follow the rules given by the user precisely."""
 
     def log(self, msg: str):
         """로그 메시지 출력"""
@@ -73,11 +59,8 @@ class RequestsPDFTranslator:
             text_parts = []
             
             for page_num, page in enumerate(reader.pages, 1):
-                # PyPDF2의 extract_text()는 기본적으로 유니코드를 반환하지만,
-                # 간혹 문제가 발생할 수 있으므로, 명시적으로 인코딩/디코딩 처리
                 page_text = page.extract_text()
                 if page_text:
-                    # latin-1 코덱 오류 방지를 위해 utf-8로 인코딩 후 다시 디코딩 (오류 무시)
                     cleaned_text = page_text.encode('utf-8', 'ignore').decode('utf-8')
                     text_parts.append(f"\n[Page {page_num}]\n{cleaned_text}\n")
                 self.log(f"  - 페이지 {page_num} 처리 완료")
@@ -93,16 +76,12 @@ class RequestsPDFTranslator:
         """텍스트를 청크로 분할"""
         chunks = []
         current_chunk = ""
-        
-        # 페이지별로 분할
         pages = text.split('[Page ')
         
         for i, page in enumerate(pages):
             if not page.strip():
                 continue
-                
             page_text = f"[Page {page}" if i > 0 else page
-            
             if len(current_chunk) + len(page_text) > self.max_input_chars and current_chunk:
                 chunks.append(current_chunk.strip())
                 current_chunk = page_text
@@ -120,65 +99,105 @@ class RequestsPDFTranslator:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
         data = {
             "model": self.model_name,
             "messages": messages,
             "temperature": 0.2,
             "max_tokens": self.max_output_tokens
         }
-        
-        response = requests.post(self.api_url, headers=headers, json=data, timeout=300) # 타임아웃 300초로 증가
-        
+        response = requests.post(self.api_url, headers=headers, json=data, timeout=300)
         self.log(f"OpenAI API 응답 상태 코드: {response.status_code}")
-        self.log(f"OpenAI API 응답 텍스트: {response.text[:500]}...") # 처음 500자만 로깅
-
         if response.status_code != 200:
-            self.log(f"OpenAI API 오류 상세: {response.text}") # 전체 응답 텍스트 로깅
-            raise RuntimeError(f"OpenAI API 오류: {response.status_code} - {response.text[:200]}...") # 처음 200자만 표시
-        
+            self.log(f"OpenAI API 오류 상세: {response.text}")
+            raise RuntimeError(f"OpenAI API 오류: {response.status_code} - {response.text[:200]}...")
         try:
             result = response.json()
         except json.JSONDecodeError:
             raise RuntimeError(f"OpenAI API 응답 JSON 파싱 실패: {response.text}")
-        
         if 'choices' not in result or not result['choices']:
             raise RuntimeError("OpenAI API 응답에 choices가 없습니다.")
-        
         return result['choices'][0]['message']['content'].strip()
 
     def translate_chunk(self, chunk: str, chunk_num: int, total_chunks: int) -> str:
         """개별 청크 번역"""
         self.log(f"청크 {chunk_num}/{total_chunks} 번역 중... (chars={len(chunk)})")
         
+        user_content = f"""Follow these rules strictly:
+1. Translate the entire text into natural, fluent, and contextually-aware Korean, as if a professional human translator wrote it. Do not summarize or omit any part.
+2. For all significant English technical terms, acronyms, or proper nouns, you MUST format them as: `KoreanTranslation(OriginalEnglish, KoreanTransliteration)`.
+3. For the `KoreanTransliteration` part, you must provide a phonetic Hangul spelling of the **OriginalEnglish** term. This means writing the English pronunciation in Hangul characters. **Do not put the Korean translation here.**
+4. For the `KoreanTranslation` part, you must provide the appropriate Korean translation of the term in the context of the sentence.
+
+Examples of rule #2:
+- Input: "This paper introduces an application of deep learning."
+- Correct Output: "이 논문은 딥러닝(deep learning, 딥러닝)의 한 응용 프로그램(application, 어플리케이션)을 소개합니다."
+
+- Input: "We used several inference engines."
+- Correct Output: "우리는 여러 추론 엔진(inference engines, 인퍼런스 엔진스)을 사용했습니다."
+- Incorrect Output: "우리는 여러 추론 엔진(inference engines, 추론 엔진)을 사용했습니다." (This is wrong because the transliteration part repeats the translation.)
+
+Now, translate the following text:
+---
+{chunk}
+"""
+
         messages = [
             {"role": "system", "content": self.SYS_RULES},
-            {
-                "role": "user",
-                "content": (
-                    f"아래 원문을 규칙에 맞춰 **완전 번역**하세요. 요약/생략/누락 금지.\n"
-                    f"영문 기술용어는 '원문(한국어 음독)'으로 표기하세요. 예: application → application(어플리케이션)\n\n"
-                    f"{chunk}"
-                )
-            }
+            {"role": "user", "content": user_content}
         ]
         
-        for attempt in range(5):
+        for attempt in range(3):
             try:
                 result = self.call_openai_api(messages)
                 if not result:
                     raise RuntimeError("빈 응답")
-                
                 self.log(f"청크 {chunk_num}/{total_chunks} 완료 (out_chars={len(result)})")
                 return result
-                
             except Exception as e:
                 self.log(f"청크 {chunk_num} 실패(시도 {attempt+1}/3): {e}")
                 if attempt == 2:
                     raise
                 time.sleep(1.2 * (attempt+1))
-        
         return ""
+
+    def extract_glossary_from_text(self, text: str) -> List[Dict]:
+        """번역된 텍스트에서 용어집을 추출합니다."""
+        self.log("번역된 텍스트에서 용어집 추출 시작...")
+        system_prompt = "You are a helpful assistant that extracts structured data from text."
+        user_prompt = f"""The following Korean text contains specially formatted technical terms. The format is `KoreanTranslation(OriginalEnglish, KoreanTransliteration)`.
+Find all occurrences of this format and extract them into a JSON list.
+Each JSON object in the list should have three keys: "term" (for the OriginalEnglish), "translation" (for the KoreanTranslation), and "transliteration" (for the KoreanTransliteration).
+If you don't find any, return an empty list [].
+Only return the JSON list, with no other text.
+
+Example Input Text: "이 논문은 딥러닝(deep learning, 딥러닝)의 한 응용 프로그램(application, 어플리케이션)을 소개합니다."
+Example JSON Output:
+[
+  {{"term": "deep learning", "translation": "딥러닝", "transliteration": "딥러닝"}},
+  {{"term": "application", "translation": "응용 프로그램", "transliteration": "어플리케이션"}}
+]
+
+Now, process the following text:
+---
+{text}
+"""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        try:
+            response_text = self.call_openai_api(messages)
+            # Find the JSON array in the response
+            match = re.search(r'[[].*[]]', response_text, re.DOTALL)
+            if not match:
+                self.log(f"  - 용어집 추출 실패: 응답에서 JSON 배열을 찾지 못했습니다. 응답: {response_text}")
+                return []
+            glossary = json.loads(match.group(0))
+            self.log(f"용어집 추출 완료: {len(glossary)}개 항목")
+            return glossary
+        except Exception as e:
+            self.log(f"용어집 추출 중 오류 발생: {e}")
+            return []
 
     def translate_pdf(self, pdf_file):
         """PDF 번역 메인 함수"""
@@ -205,10 +224,13 @@ class RequestsPDFTranslator:
             # 결과 합치기
             translated_text = "\n\n".join(translated_chunks)
 
+            # 번역된 텍스트에서 용어집 추출
+            glossary = self.extract_glossary_from_text(translated_text)
+
             return {
                 'success': True,
                 'translated_text': translated_text,
-                'glossary': [],  # 간단한 버전에서는 용어집 생략
+                'glossary': glossary,  # 간단한 버전에서는 용어집 생략
                 'message': '번역이 완료되었습니다.'
             }
 

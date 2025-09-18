@@ -3,6 +3,12 @@ import sys
 # DON'T CHANGE THIS !!!
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# Windows에서 Unicode 출력 오류 방지를 위한 설정
+if sys.platform == "win32":
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+
 from flask import Flask, send_from_directory
 from flask_cors import CORS
 from src.models.user import db
