@@ -123,87 +123,113 @@ translateForm.addEventListener('submit', async (e) => {
     formData.append('file', selectedFile);
     formData.append('api_key', apiKey);
     formData.append('model_name', document.getElementById('modelName').value);
-    formData.append('generate_ko', document.getElementById('generateKo').checked);
     
     // 로딩 시작
     showLoading();
     submitBtn.disabled = true;
     
     try {
-        const response = await fetch('/api/pdf/translate', {
+        // 1. 파일 업로드 및 태스크 생성
+        updateLoadingMessage('PDF 업로드 및 분석 중...');
+        const uploadResponse = await fetch('/api/pdf/upload', {
             method: 'POST',
             body: formData
         });
         
-        const result = await response.json();
+        const uploadResult = await uploadResponse.json();
         
-        if (result.success) {
-            translationResult = result;
-            displayResult(result);
+        if (!uploadResult.success) {
+            throw new Error(uploadResult.message);
+        }
+        
+        const { task_id, total_chunks } = uploadResult;
+        
+        // 2. 각 청크 병렬 번역
+        await translateChunksParallel(task_id, total_chunks);
+        
+        // 3. 최종 결과 가져오기
+        updateLoadingMessage('최종 결과 취합 중...');
+        updateProgressBar(1); // 최종 단계이므로 100%로 설정
+        const resultResponse = await fetch(`/api/pdf/result/${task_id}`);
+        const finalResult = await resultResponse.json();
+        
+        if (finalResult.success) {
+            translationResult = finalResult;
+            displayResult(finalResult);
             resultSection.style.display = 'block';
             resultSection.scrollIntoView({ behavior: 'smooth' });
         } else {
-            alert('번역 실패: ' + result.message);
+            throw new Error(finalResult.message);
         }
+        
     } catch (error) {
         console.error('Error:', error);
-        alert('서버 오류가 발생했습니다: ' + error.message);
+        alert('오류가 발생했습니다: ' + error.message);
     } finally {
         hideLoading();
         submitBtn.disabled = false;
     }
 });
 
-// 로딩 표시
-function showLoading() {
-    loadingOverlay.style.display = 'flex';
-    
-    const messages = [
-        'PDF를 분석하고 있습니다...',
-        '용어를 추출하고 있습니다...',
-        '한국어 음독을 생성하고 있습니다...',
-        '번역을 진행하고 있습니다...',
-        '결과를 정리하고 있습니다...'
-    ];
-    
-    let messageIndex = 0;
-    const messageInterval = setInterval(() => {
-        if (messageIndex < messages.length) {
-            loadingMessage.textContent = messages[messageIndex];
-            messageIndex++;
-        } else {
-            clearInterval(messageInterval);
+async function translateChunksParallel(taskId, totalChunks) {
+    const concurrencyLimit = 5;
+    const chunks = Array.from({ length: totalChunks }, (_, i) => i);
+    let completedChunks = 0;
+
+    async function translateWorker(chunkIndices) {
+        for (const i of chunkIndices) {
+            updateLoadingMessage(`청크 번역 중 (${completedChunks + 1}/${totalChunks})...`);
+            
+            const response = await fetch('/api/pdf/translate_chunk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ task_id: taskId, chunk_index: i })
+            });
+
+            const result = await response.json();
+            if (!result.success) {
+                throw new Error(`청크 ${i} 번역 실패: ${result.message}`);
+            }
+            
+            completedChunks++;
+            updateProgressBar(completedChunks / totalChunks);
         }
-    }, 3000);
-    
-    // 프로그레스 바 애니메이션
-    let progress = 0;
-    const progressInterval = setInterval(() => {
-        progress += Math.random() * 10;
-        if (progress > 90) progress = 90;
-        progressFill.style.width = progress + '%';
-    }, 500);
-    
-    // 로딩 완료 시 정리를 위해 interval ID 저장
-    loadingOverlay.messageInterval = messageInterval;
-    loadingOverlay.progressInterval = progressInterval;
+    }
+
+    const workers = [];
+    const chunkSlices = [];
+    for (let i = 0; i < concurrencyLimit; i++) {
+        chunkSlices.push([]);
+    }
+    chunks.forEach((chunk, i) => {
+        chunkSlices[i % concurrencyLimit].push(chunk);
+    });
+
+    for (let i = 0; i < concurrencyLimit; i++) {
+        workers.push(translateWorker(chunkSlices[i]));
+    }
+
+    await Promise.all(workers);
 }
 
-// 로딩 숨기기
-function hideLoading() {
-    loadingOverlay.style.display = 'none';
-    
-    // interval 정리
-    if (loadingOverlay.messageInterval) {
-        clearInterval(loadingOverlay.messageInterval);
-    }
-    if (loadingOverlay.progressInterval) {
-        clearInterval(loadingOverlay.progressInterval);
-    }
-    
-    // 프로그레스 바 리셋
+// 로딩 UI 업데이트 함수들
+function showLoading() {
+    loadingOverlay.style.display = 'flex';
     progressFill.style.width = '0%';
 }
+
+function hideLoading() {
+    loadingOverlay.style.display = 'none';
+}
+
+function updateLoadingMessage(message) {
+    loadingMessage.textContent = message;
+}
+
+function updateProgressBar(progress) { // progress is 0 to 1
+    progressFill.style.width = (progress * 100) + '%';
+}
+
 
 // 결과 표시
 function displayResult(result) {
@@ -212,13 +238,35 @@ function displayResult(result) {
     
     // 용어집 표시
     glossaryContent.innerHTML = '';
-    if (result.glossary && result.glossary.length > 0) {
-        result.glossary.forEach(item => {
+    const combinedGlossary = new Map();
+
+    // 1. Add custom glossary (from dict.csv)
+    if (result.glossary && typeof result.glossary === 'object') {
+        for (const term in result.glossary) {
+            if (Object.prototype.hasOwnProperty.call(result.glossary, term)) {
+                if (!combinedGlossary.has(term)) {
+                    combinedGlossary.set(term, result.glossary[term]);
+                }
+            }
+        }
+    }
+
+    // 2. Add extracted glossary, giving priority to custom glossary
+    if (result.extracted_glossary && Array.isArray(result.extracted_glossary)) {
+        result.extracted_glossary.forEach(item => {
+            if (item.term && !combinedGlossary.has(item.term)) {
+                combinedGlossary.set(item.term, item.translation || '(번역 없음)');
+            }
+        });
+    }
+
+    if (combinedGlossary.size > 0) {
+        combinedGlossary.forEach((translation, term) => {
             const glossaryItem = document.createElement('div');
             glossaryItem.className = 'glossary-item';
             glossaryItem.innerHTML = `
-                <span class="glossary-term">${item.term}</span>
-                <span class="glossary-translation">${item.ko || '(음독 없음)'}</span>
+                <span class="glossary-term">${term}</span>
+                <span class="glossary-translation">${translation}</span>
             `;
             glossaryContent.appendChild(glossaryItem);
         });
@@ -231,9 +279,34 @@ function displayResult(result) {
 downloadBtn.addEventListener('click', () => {
     if (!translationResult) return;
     
-    const content = `PDF 번역 결과\n\n번역문:\n${translationResult.translated_text}\n\n용어집:\n${
-        translationResult.glossary.map(item => `${item.term}: ${item.ko || '(음독 없음)'}`).join('\n')
-    }`;
+    const combinedGlossary = new Map();
+
+    // 1. Add custom glossary (from dict.csv)
+    if (translationResult.glossary && typeof translationResult.glossary === 'object') {
+        for (const term in translationResult.glossary) {
+            if (Object.prototype.hasOwnProperty.call(translationResult.glossary, term)) {
+                if (!combinedGlossary.has(term)) {
+                    combinedGlossary.set(term, translationResult.glossary[term]);
+                }
+            }
+        }
+    }
+
+    // 2. Add extracted glossary, giving priority to custom glossary
+    if (translationResult.extracted_glossary && Array.isArray(translationResult.extracted_glossary)) {
+        translationResult.extracted_glossary.forEach(item => {
+            if (item.term && !combinedGlossary.has(item.term)) {
+                combinedGlossary.set(item.term, item.translation || '(번역 없음)');
+            }
+        });
+    }
+
+    let glossaryText = '';
+    combinedGlossary.forEach((translation, term) => {
+        glossaryText += `${term}: ${translation}\n`;
+    });
+
+    const content = `PDF 번역 결과\n\n번역문:\n${translationResult.translated_text}\n\n용어집:\n${glossaryText}`;
     
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -256,9 +329,33 @@ copyBtn.addEventListener('click', async () => {
     if (activeTab === 'translation') {
         textToCopy = translationResult.translated_text;
     } else {
-        textToCopy = translationResult.glossary.map(item => 
-            `${item.term}: ${item.ko || '(음독 없음)'}`
-        ).join('\n');
+        const combinedGlossary = new Map();
+
+        // 1. Add custom glossary (from dict.csv)
+        if (translationResult.glossary && typeof translationResult.glossary === 'object') {
+            for (const term in translationResult.glossary) {
+                if (Object.prototype.hasOwnProperty.call(translationResult.glossary, term)) {
+                    if (!combinedGlossary.has(term)) {
+                        combinedGlossary.set(term, translationResult.glossary[term]);
+                    }
+                }
+            }
+        }
+
+        // 2. Add extracted glossary, giving priority to custom glossary
+        if (translationResult.extracted_glossary && Array.isArray(translationResult.extracted_glossary)) {
+            translationResult.extracted_glossary.forEach(item => {
+                if (item.term && !combinedGlossary.has(item.term)) {
+                    combinedGlossary.set(item.term, item.translation || '(번역 없음)');
+                }
+            });
+        }
+
+        let glossaryText = '';
+        combinedGlossary.forEach((translation, term) => {
+            glossaryText += `${term}: ${translation}\n`;
+        });
+        textToCopy = glossaryText;
     }
     
     try {

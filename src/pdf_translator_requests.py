@@ -8,14 +8,42 @@ import os, io, re, json, time
 from typing import List, Dict
 import PyPDF2
 import requests
+import csv
 
 class RequestsPDFTranslator:
     def __init__(self, api_key: str, model_name: str = "gpt-4o-mini"):
         self.api_key = api_key
         self.model_name = model_name
         self.api_url = "https://api.openai.com/v1/chat/completions"
-        self.max_input_chars = 7000
-        self.max_output_tokens = 3200
+        self.max_input_chars = 16000
+        self.max_output_tokens = 16384
+        self.custom_glossary = {} # Initialize custom glossary
+        self.load_glossary_from_csv() # Load glossary on initialization
+
+    def load_glossary_from_csv(self, file_path: str = "dict.csv"):
+        """dict.csv 파일에서 사용자 정의 용어집을 로드합니다."""
+        script_dir = os.path.dirname(__file__)
+        full_file_path = os.path.join(script_dir, file_path)
+        
+        if not os.path.exists(full_file_path):
+            self.log(f"경고: 용어집 파일 '{full_file_path}'을(를) 찾을 수 없습니다. 사용자 정의 용어집을 로드하지 않습니다.")
+            return
+
+        self.log(f"용어집 파일 '{full_file_path}' 로드 중...")
+        try:
+            with open(full_file_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                for i, row in enumerate(reader):
+                    if len(row) == 2:
+                        english_term = row[0].strip()
+                        korean_formatted_term = row[1].strip()
+                        self.custom_glossary[english_term] = korean_formatted_term
+                    else:
+                        self.log(f"경고: 용어집 파일 '{file_path}'의 {i+1}번째 줄 형식이 올바르지 않습니다: {row}")
+            self.log(f"용어집 로드 완료: {len(self.custom_glossary)}개 항목")
+        except Exception as e:
+            self.log(f"용어집 로드 중 오류 발생: {e}")
+            self.custom_glossary = {} # Clear glossary on error
 
     def validate_api_key(self) -> bool:
         """OpenAI API 키 유효성 검사"""
@@ -73,25 +101,52 @@ class RequestsPDFTranslator:
             raise RuntimeError(f"PDF 텍스트 추출 실패: {str(e)}")
 
     def split_text_into_chunks(self, text: str) -> List[str]:
-        """텍스트를 청크로 분할"""
+        """텍스트를 페이지별로 청크로 분할"""
+        if not text:
+            return []
+
+        # extract_text_from_pdf에서 추가된 첫 '\n' 제거
+        if text.startswith('\n'):
+            text = text[1:]
+
+        pages = text.split('\n[Page ')
+        
         chunks = []
-        current_chunk = ""
-        pages = text.split('[Page ')
-        
-        for i, page in enumerate(pages):
-            if not page.strip():
-                continue
-            page_text = f"[Page {page}" if i > 0 else page
-            if len(current_chunk) + len(page_text) > self.max_input_chars and current_chunk:
-                chunks.append(current_chunk.strip())
-                current_chunk = page_text
+        if pages:
+            # 첫 페이지 처리
+            chunks.append(pages[0].strip())
+
+            # 나머지 페이지 처리
+            for i in range(1, len(pages)):
+                # '[Page ' 부분을 다시 붙여줌
+                page_content = f"[Page {pages[i]}".strip()
+                chunks.append(page_content)
+
+        # 빈 청크 제거
+        chunks = [c for c in chunks if c]
+
+        # 페이지가 너무 긴 경우에 대한 처리
+        final_chunks = []
+        for chunk in chunks:
+            if len(chunk) > self.max_input_chars:
+                self.log(f"경고: 페이지 청크가 최대 입력 길이({self.max_input_chars})를 초과하여 분할합니다.")
+                # 문장 단위로 분할
+                sub_chunks = []
+                current_sub_chunk = ""
+                sentences = re.split(r'(?<=[.!?])\s+', chunk)
+                for sentence in sentences:
+                    if len(current_sub_chunk) + len(sentence) > self.max_input_chars and current_sub_chunk:
+                        sub_chunks.append(current_sub_chunk.strip())
+                        current_sub_chunk = sentence
+                    else:
+                        current_sub_chunk += " " + sentence if current_sub_chunk else sentence
+                if current_sub_chunk:
+                    sub_chunks.append(current_sub_chunk.strip())
+                final_chunks.extend(sub_chunks)
             else:
-                current_chunk += "\n" + page_text if current_chunk else page_text
+                final_chunks.append(chunk)
         
-        if current_chunk.strip():
-            chunks.append(current_chunk.strip())
-        
-        return chunks
+        return final_chunks
 
     def call_openai_api(self, messages: List[Dict]) -> str:
         """OpenAI API 호출"""
@@ -122,21 +177,44 @@ class RequestsPDFTranslator:
         """개별 청크 번역"""
         self.log(f"청크 {chunk_num}/{total_chunks} 번역 중... (chars={len(chunk)})")
         
-        user_content = f"""Follow these rules strictly:
-1. Translate the entire text into natural, fluent, and contextually-aware Korean, as if a professional human translator wrote it. Do not summarize or omit any part.
-2. For all significant English technical terms, acronyms, or proper nouns, you MUST format them as: `KoreanTranslation(OriginalEnglish, KoreanTransliteration)`.
-3. For the `KoreanTransliteration` part, you must provide a phonetic Hangul spelling of the **OriginalEnglish** term. This means writing the English pronunciation in Hangul characters. **Do not put the Korean translation here.**
-4. For the `KoreanTranslation` part, you must provide the appropriate Korean translation of the term in the context of the sentence.
+        glossary_guidance = ""
+        if self.custom_glossary:
+            found_terms = []
+            for english_term, korean_formatted_term in self.custom_glossary.items():
+                # Use regex to find whole words, case-insensitive
+                if re.search(r'\b' + re.escape(english_term) + r'\b', chunk, re.IGNORECASE):
+                    found_terms.append(f"- For the term '{english_term}', you must use the exact translation '{korean_formatted_term}'.")
+            if found_terms:
+                glossary_guidance = "### Specialized Terminology Guidelines\nYou must adhere to the following translation rules for specific terms found in the text:\n" + "\n".join(found_terms) + "\n\n"
 
-Examples of rule #2:
-- Input: "This paper introduces an application of deep learning."
-- Correct Output: "이 논문은 딥러닝(deep learning, 딥러닝)의 한 응용 프로그램(application, 어플리케이션)을 소개합니다."
+        user_content = f"""{glossary_guidance}### Persona
+You are a world-class expert translator specializing in academic papers. You have a Ph.D. in a relevant field and are a native Korean speaker with flawless English proficiency. Your translations are not just literal; they are deeply contextual, maintaining the original author's tone, nuance, and intent.
 
-- Input: "We used several inference engines."
-- Correct Output: "우리는 여러 추론 엔진(inference engines, 인퍼런스 엔진스)을 사용했습니다."
-- Incorrect Output: "우리는 여러 추론 엔진(inference engines, 추론 엔진)을 사용했습니다." (This is wrong because the transliteration part repeats the translation.)
+### Core Translation Rules
+1.  **Translate Everything**: Translate the entire text from English to Korean. Do not summarize, omit, or add information. Preserve all original content, including footnotes, figure captions, and table data.
+2.  **Professional & Academic Tone**: The translation must be formal, precise, and use standard academic Korean. Avoid colloquialisms or overly casual language.
+3.  **Context is King**: Ensure the translation is contextually aware. The meaning of a term can change based on the surrounding text.
 
-Now, translate the following text:
+### Formatting Rule for Technical Terms
+This is a critical rule. For all significant English technical terms, acronyms, or proper nouns, you MUST format them as follows: `KoreanTranslation(OriginalEnglish, KoreanTransliteration)`.
+
+-   **`KoreanTranslation`**: The appropriate Korean translation of the term in the context of the sentence.
+-   **`OriginalEnglish`**: The original English term.
+-   **`KoreanTransliteration`**: A phonetic Hangul spelling of the **OriginalEnglish** term. This is how the English word is pronounced, written in Hangul. **Do not put the Korean translation here.**
+
+#### Examples of the Formatting Rule:
+-   **Input**: "This paper introduces an application of deep learning."
+-   **Correct Output**: "이 논문은 딥러닝(deep learning, 딥러닝)의 한 응용 프로그램(application, 어플리케이션)을 소개합니다."
+
+-   **Input**: "We used several inference engines."
+-   **Correct Output**: "우리는 여러 추론 엔진(inference engines, 인퍼런스 엔진스)을 사용했습니다."
+-   **Incorrect Output**: "우리는 여러 추론 엔진(inference engines, 추론 엔진)을 사용했습니다." (This is wrong because the transliteration part repeats the translation.)
+
+### Handling Ambiguity
+If a term is ambiguous, choose the most likely translation based on the academic context. If a direct translation is impossible or awkward, you may use a combination of translation and transliteration, but always follow the formatting rule.
+
+### Final Instruction
+Now, translate the following text, applying all rules and guidelines with the utmost precision.
 ---
 {chunk}
 """
@@ -151,6 +229,19 @@ Now, translate the following text:
                 result = self.call_openai_api(messages)
                 if not result:
                     raise RuntimeError("빈 응답")
+                
+                # Post-processing for glossary terms
+                if self.custom_glossary:
+                    for english_term, korean_formatted_term in self.custom_glossary.items():
+                        # Ensure we replace whole words only and not parts of other words
+                        # Also, avoid replacing if it's already in the desired format
+                        result = re.sub(
+                            r'\b' + re.escape(korean_formatted_term) + r'(?!\s*\()', 
+                            f'{korean_formatted_term}({english_term})', 
+                            result,
+                            flags=re.IGNORECASE
+                        )
+
                 self.log(f"청크 {chunk_num}/{total_chunks} 완료 (out_chars={len(result)})")
                 return result
             except Exception as e:
@@ -163,21 +254,35 @@ Now, translate the following text:
     def extract_glossary_from_text(self, text: str) -> List[Dict]:
         """번역된 텍스트에서 용어집을 추출합니다."""
         self.log("번역된 텍스트에서 용어집 추출 시작...")
-        system_prompt = "You are a helpful assistant that extracts structured data from text."
+        system_prompt = "You are a helpful assistant that extracts structured data from text. Your output must be a valid JSON."
         user_prompt = f"""The following Korean text contains specially formatted technical terms. The format is `KoreanTranslation(OriginalEnglish, KoreanTransliteration)`.
-Find all occurrences of this format and extract them into a JSON list.
-Each JSON object in the list should have three keys: "term" (for the OriginalEnglish), "translation" (for the KoreanTranslation), and "transliteration" (for the KoreanTransliteration).
-If you don't find any, return an empty list [].
-Only return the JSON list, with no other text.
 
-Example Input Text: "이 논문은 딥러닝(deep learning, 딥러닝)의 한 응용 프로그램(application, 어플리케이션)을 소개합니다."
-Example JSON Output:
+Your task is to find all occurrences of this format and extract them into a valid JSON list.
+
+Each JSON object in the list must have three keys:
+1.  `"term"`: The OriginalEnglish string.
+2.  `"translation"`: The KoreanTranslation string.
+3.  `"transliteration"`: The KoreanTransliteration string.
+
+**CRITICAL**:
+- If you find no terms, you MUST return an empty JSON list `[]`.
+- Your output MUST be only the JSON list, with no other text, explanations, or markdown formatting.
+- Ensure the JSON is perfectly formatted.
+
+**Example 1:**
+- **Input Text**: "이 논문은 딥러닝(deep learning, 딥러닝)의 한 응용 프로그램(application, 어플리케이션)을 소개합니다."
+- **Correct JSON Output**:
 [
   {{"term": "deep learning", "translation": "딥러닝", "transliteration": "딥러닝"}},
   {{"term": "application", "translation": "응용 프로그램", "transliteration": "어플리케이션"}}
 ]
 
-Now, process the following text:
+**Example 2:**
+- **Input Text**: "이 텍스트에는 특별한 용어가 없습니다."
+- **Correct JSON Output**:
+[]
+
+Now, process the following text and provide only the JSON output:
 ---
 {text}
 """
@@ -188,7 +293,7 @@ Now, process the following text:
         try:
             response_text = self.call_openai_api(messages)
             # Find the JSON array in the response
-            match = re.search(r'[[].*[]]', response_text, re.DOTALL)
+            match = re.search(r'\[.*\]', response_text, re.DOTALL)
             if not match:
                 self.log(f"  - 용어집 추출 실패: 응답에서 JSON 배열을 찾지 못했습니다. 응답: {response_text}")
                 return []
@@ -225,12 +330,13 @@ Now, process the following text:
             translated_text = "\n\n".join(translated_chunks)
 
             # 번역된 텍스트에서 용어집 추출
-            glossary = self.extract_glossary_from_text(translated_text)
+            extracted_glossary = self.extract_glossary_from_text(translated_text)
 
             return {
                 'success': True,
                 'translated_text': translated_text,
-                'glossary': glossary,  # 간단한 버전에서는 용어집 생략
+                'glossary': self.custom_glossary,
+                'extracted_glossary': extracted_glossary,
                 'message': '번역이 완료되었습니다.'
             }
 
