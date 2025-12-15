@@ -52,17 +52,23 @@
                         </div>
 
                         <div class="form-group">
-                            <label for="apiKey">OpenAI API 키 *</label>
-                            <input type="password" id="apiKey" name="api_key" required 
-                                   placeholder="sk-proj-..." class="form-input">
-                            <small class="form-help">API 키는 서버에 저장되지 않습니다</small>
+                            <label for="apiKey">API 키 (OpenAI 또는 Claude) *</label>
+                            <input type="password" id="apiKey" name="api_key" required
+                                   placeholder="sk-proj- 또는 sk-ant-..." class="form-input">
+                            <small class="form-help">OpenAI 또는 Claude API 키를 입력하세요. 키는 서버에 저장되지 않습니다.</small>
                         </div>
 
                         <div class="form-group">
                             <label for="modelName">모델 선택</label>
                             <select id="modelName" name="model_name" class="form-select">
-                                <option value="gpt-4o-mini">GPT-4o Mini (권장)</option>
-                                <option value="gpt-4o">GPT-4o</option>
+                                <optgroup label="OpenAI 모델">
+                                    <option value="gpt-4o-mini" selected>GPT-4o Mini (권장, 빠름)</option>
+                                    <option value="gpt-4o">GPT-4o (고성능)</option>
+                                </optgroup>
+                                <optgroup label="Claude 모델">
+                                    <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (빠름, 권장)</option>
+                                    <option value="claude-3-opus-20240229">Claude 3 Opus (최고 성능)</option>
+                                </optgroup>
                             </select>
                         </div>
 

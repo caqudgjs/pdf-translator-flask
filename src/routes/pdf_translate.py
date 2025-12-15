@@ -3,7 +3,7 @@ from werkzeug.utils import secure_filename
 import os
 import uuid
 import json
-from src.pdf_translator_requests import RequestsPDFTranslator
+from src.translator_factory import TranslatorFactory
 
 pdf_translate_bp = Blueprint('pdf_translate', __name__)
 
@@ -30,12 +30,16 @@ def upload_pdf():
     model_name = request.form.get('model_name', 'gpt-4o-mini')
     
     if not api_key:
-        return jsonify({'success': False, 'message': 'OpenAI API 키가 필요합니다.'}), 400
+        return jsonify({'success': False, 'message': 'API 키가 필요합니다.'}), 400
 
     try:
-        translator = RequestsPDFTranslator(api_key=api_key, model_name=model_name)
+        try:
+            translator = TranslatorFactory.create_translator(api_key=api_key, model_name=model_name)
+        except ValueError as e:
+            return jsonify({'success': False, 'message': f'지원하지 않는 모델입니다: {model_name}'}), 400
+
         if not translator.validate_api_key():
-            return jsonify({'success': False, 'message': '유효하지 않은 OpenAI API 키입니다.'}), 401
+            return jsonify({'success': False, 'message': '유효하지 않은 API 키입니다. OpenAI 또는 Claude API 키를 확인해주세요.'}), 401
 
         task_id = str(uuid.uuid4())
         task_dir = os.path.join(TEMP_FOLDER, task_id)
@@ -96,7 +100,7 @@ def translate_chunk_route():
         with open(original_chunk_path, 'r', encoding='utf-8') as f:
             chunk_content = f.read()
 
-        translator = RequestsPDFTranslator(api_key=api_key, model_name=model_name)
+        translator = TranslatorFactory.create_translator(api_key=api_key, model_name=model_name)
         translated_chunk = translator.translate_chunk(chunk_content, chunk_index + 1, total_chunks)
 
         translated_chunk_path = os.path.join(task_dir, f'chunk_{chunk_index}_translated.txt')
@@ -131,7 +135,7 @@ def get_result(task_id):
         full_translated_text = "\n\n".join(translated_chunks)
 
         # Glossary extraction
-        translator = RequestsPDFTranslator(api_key=task_info['api_key'], model_name=task_info['model_name'])
+        translator = TranslatorFactory.create_translator(api_key=task_info['api_key'], model_name=task_info['model_name'])
         extracted_glossary = translator.extract_glossary_from_text(full_translated_text)
 
         # Clean up temporary files

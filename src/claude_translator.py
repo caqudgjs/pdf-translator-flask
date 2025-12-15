@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-requests를 사용한 OpenAI 기반 PDF 번역 모듈
-배포 환경에서 호환성 문제를 해결하기 위해 단순화
+Anthropic Claude API를 사용한 PDF 번역 모듈
 """
 
 import re, json, time
@@ -10,64 +9,121 @@ import requests
 from src.base_translator import BaseTranslator
 
 
-class RequestsPDFTranslator(BaseTranslator):
-    """OpenAI API를 사용하는 PDF 번역기"""
+class ClaudeTranslator(BaseTranslator):
+    """Claude API를 사용하는 PDF 번역기"""
 
-    def __init__(self, api_key: str, model_name: str = "gpt-4o-mini"):
+    def __init__(self, api_key: str, model_name: str = "claude-3-5-sonnet-20241022"):
         """
         Args:
-            api_key: OpenAI API 키
-            model_name: OpenAI 모델 이름 (예: gpt-4o-mini, gpt-4o)
+            api_key: Claude API 키
+            model_name: Claude 모델 이름 (예: claude-3-5-sonnet-20241022)
         """
         super().__init__(api_key, model_name)
-        self.api_url = "https://api.openai.com/v1/chat/completions"
-        # OpenAI는 16384 토큰 지원
-        self.max_output_tokens = 16384
+        self.api_url = "https://api.anthropic.com/v1/messages"
+
+        # 모델별 토큰 제한 설정
+        if 'opus' in model_name.lower():
+            self.max_output_tokens = 16384
+        else:
+            # Sonnet, Haiku
+            self.max_output_tokens = 8192
 
     def validate_api_key(self) -> bool:
-        """OpenAI API 키 유효성 검사"""
-        self.log("OpenAI API 키 유효성 검사 시작")
+        """Claude API 키 유효성 검사 (최소 요청으로 테스트)"""
+        self.log("Claude API 키 유효성 검사 시작")
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
         }
-        try:
-            # 모델 목록을 가져오는 간단한 API 호출로 키 유효성 검사
-            response = requests.get("https://api.openai.com/v1/models", headers=headers, timeout=10)
-            if response.status_code == 200:
-                self.log("OpenAI API 키 유효성 검사 성공")
-                return True
-            else:
-                self.log(f"OpenAI API 키 유효성 검사 실패: {response.status_code} - {response.text}")
-                return False
-        except requests.exceptions.RequestException as e:
-            self.log(f"OpenAI API 키 유효성 검사 중 네트워크 오류: {e}")
-            return False
 
-    def call_openai_api(self, messages: List[Dict]) -> str:
-        """OpenAI API 호출"""
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        # 최소 테스트 요청 (비용 최소화)
         data = {
             "model": self.model_name,
-            "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": self.max_output_tokens
+            "max_tokens": 10,
+            "messages": [
+                {"role": "user", "content": "Hi"}
+            ]
         }
+
+        try:
+            response = requests.post(
+                self.api_url,
+                headers=headers,
+                json=data,
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                self.log("Claude API 키 유효성 검사 성공")
+                return True
+            else:
+                self.log(f"Claude API 키 유효성 검사 실패: {response.status_code} - {response.text}")
+                return False
+
+        except requests.exceptions.RequestException as e:
+            self.log(f"Claude API 키 유효성 검사 중 네트워크 오류: {e}")
+            return False
+
+    def call_claude_api(self, system_prompt: str, user_content: str) -> str:
+        """Claude API 호출"""
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+
+        # Claude API는 system 메시지를 별도 파라미터로 받음
+        data = {
+            "model": self.model_name,
+            "max_tokens": self.max_output_tokens,  # Claude는 max_tokens 필수
+            "temperature": 0.2,
+            "system": system_prompt,  # messages 배열이 아닌 별도 파라미터
+            "messages": [
+                {"role": "user", "content": user_content}
+            ]
+        }
+
         response = requests.post(self.api_url, headers=headers, json=data, timeout=300)
-        self.log(f"OpenAI API 응답 상태 코드: {response.status_code}")
+        self.log(f"Claude API 응답 상태 코드: {response.status_code}")
+
         if response.status_code != 200:
-            self.log(f"OpenAI API 오류 상세: {response.text}")
-            raise RuntimeError(f"OpenAI API 오류: {response.status_code} - {response.text[:200]}...")
+            self.log(f"Claude API 오류 상세: {response.text}")
+
+            # Claude 특정 에러 처리
+            try:
+                error_data = response.json()
+                error_type = error_data.get('error', {}).get('type', '')
+
+                if error_type == 'invalid_request_error':
+                    raise RuntimeError(f"Claude API 요청 오류: 잘못된 요청 형식입니다.")
+                elif error_type == 'authentication_error':
+                    raise RuntimeError("Claude API 인증 실패: API 키를 확인해주세요.")
+                elif error_type == 'permission_error':
+                    raise RuntimeError("Claude API 권한 오류: 해당 모델에 대한 접근 권한이 없습니다.")
+                elif error_type == 'rate_limit_error':
+                    raise RuntimeError("Claude API 속도 제한 초과: 잠시 후 다시 시도해주세요.")
+                else:
+                    raise RuntimeError(f"Claude API 오류 ({response.status_code}): {response.text[:200]}...")
+            except (json.JSONDecodeError, KeyError):
+                raise RuntimeError(f"Claude API 오류 ({response.status_code}): {response.text[:200]}...")
+
         try:
             result = response.json()
         except json.JSONDecodeError:
-            raise RuntimeError(f"OpenAI API 응답 JSON 파싱 실패: {response.text}")
-        if 'choices' not in result or not result['choices']:
-            raise RuntimeError("OpenAI API 응답에 choices가 없습니다.")
-        return result['choices'][0]['message']['content'].strip()
+            raise RuntimeError(f"Claude API 응답 JSON 파싱 실패: {response.text}")
+
+        # Claude 응답 구조: result['content']는 리스트
+        if 'content' not in result:
+            raise RuntimeError(f"Claude API 응답에 content가 없습니다: {result}")
+
+        if not isinstance(result['content'], list) or len(result['content']) == 0:
+            raise RuntimeError(f"Claude API content가 비어있습니다: {result.get('content')}")
+
+        if 'text' not in result['content'][0]:
+            raise RuntimeError(f"Claude API content에 text 필드가 없습니다: {result['content'][0]}")
+
+        return result['content'][0]['text'].strip()
 
     def translate_chunk(self, chunk: str, chunk_num: int, total_chunks: int) -> str:
         """개별 청크 번역"""
@@ -115,14 +171,14 @@ Now, translate the following text, applying all rules and guidelines with the ut
 {chunk}
 """
 
-        messages = [
-            {"role": "system", "content": self.SYS_RULES},
-            {"role": "user", "content": user_content}
-        ]
-
         for attempt in range(3):
             try:
-                result = self.call_openai_api(messages)
+                # Claude API는 system과 user_content를 별도로 전달
+                result = self.call_claude_api(
+                    system_prompt=self.SYS_RULES,
+                    user_content=user_content
+                )
+
                 if not result:
                     raise RuntimeError("빈 응답")
 
@@ -140,11 +196,13 @@ Now, translate the following text, applying all rules and guidelines with the ut
 
                 self.log(f"청크 {chunk_num}/{total_chunks} 완료 (out_chars={len(result)})")
                 return result
+
             except Exception as e:
                 self.log(f"청크 {chunk_num} 실패(시도 {attempt+1}/3): {e}")
                 if attempt == 2:
                     raise
                 time.sleep(1.2 * (attempt+1))
+
         return ""
 
     def extract_glossary_from_text(self, text: str) -> List[Dict]:
@@ -182,12 +240,8 @@ Now, process the following text and provide only the JSON output:
 ---
 {text}
 """
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
         try:
-            response_text = self.call_openai_api(messages)
+            response_text = self.call_claude_api(system_prompt, user_prompt)
             # Find the JSON array in the response
             match = re.search(r'\[.*\]', response_text, re.DOTALL)
             if not match:
@@ -199,7 +253,3 @@ Now, process the following text and provide only the JSON output:
         except Exception as e:
             self.log(f"용어집 추출 중 오류 발생: {e}")
             return []
-
-
-# 하위 호환성을 위한 alias
-OpenAITranslator = RequestsPDFTranslator
